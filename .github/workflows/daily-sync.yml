@@ -1,0 +1,47 @@
+name: JIRA → WordPress translation sync
+
+on:
+  schedule:
+    # Run daily at 08:00 UTC (11:00 Kyiv time)
+    - cron: "0 8 * * *"
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run JIRA → WordPress sync
+        env:
+          # ── JIRA (store as GitHub Secrets) ──────────────────────────────────
+          JIRA_BASE_URL:           ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL:              ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN:          ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY:        ${{ secrets.JIRA_PROJECT_KEY }}
+          # ── JIRA customisation (store as GitHub Variables) ───────────────────
+          JIRA_TRIGGER_STATUS:     ${{ vars.JIRA_TRIGGER_STATUS }}
+          JIRA_NEXT_STATUS:        ${{ vars.JIRA_NEXT_STATUS }}
+          JIRA_TRANSLATOR_FIELD:   ${{ vars.JIRA_TRANSLATOR_FIELD }}
+          JIRA_ORIGINAL_URL_FIELD: ${{ vars.JIRA_ORIGINAL_URL_FIELD }}
+          # ── WordPress (store as GitHub Secrets) ─────────────────────────────
+          WP_BASE_URL:             ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME:             ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:         ${{ secrets.WP_APP_PASSWORD }}
+          # ── Anthropic (store as GitHub Secret) ──────────────────────────────
+          ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
+          # ── Email (store as GitHub Secrets) ─────────────────────────────────
+          SMTP_USER:               ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD:           ${{ secrets.SMTP_PASSWORD }}
+          NOTIFY_EMAIL:            ${{ vars.NOTIFY_EMAIL }}
+        run: python scripts/sync.py
