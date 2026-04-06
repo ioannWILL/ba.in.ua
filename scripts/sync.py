@@ -63,6 +63,22 @@ class JiraClient:
         self.session.auth = (JIRA_EMAIL, JIRA_API_TOKEN)
         self.session.headers.update({"Accept": "application/json"})
         self.base = JIRA_BASE_URL.rstrip("/")
+        self._field_ids = self._discover_field_ids()
+
+    def _discover_field_ids(self) -> dict[str, str]:
+        """Build name→id map for all JIRA fields (used to resolve custom fields by name)."""
+        try:
+            fields = self._get("/rest/api/3/field")
+            mapping = {f["name"].lower(): f["id"] for f in fields}
+            log.info("Discovered %d JIRA fields", len(mapping))
+            return mapping
+        except Exception as e:
+            log.warning("Could not discover JIRA fields: %s", e)
+            return {}
+
+    def _field_id(self, name: str) -> str:
+        """Return field ID for a given field name (case-insensitive)."""
+        return self._field_ids.get(name.lower(), "")
 
     def _get(self, path, **kw):
         r = self.session.get(f"{self.base}{path}", **kw)
@@ -76,14 +92,15 @@ class JiraClient:
 
     def get_issues_in_status(self, status: str) -> list[dict]:
         jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" ORDER BY updated ASC'
-        # Atlassian deprecated GET /search — use POST /search/jql instead
         url = f"{self.base}/rest/api/3/search/jql"
-        log.info("JIRA search POST %s  jql=%s", url, jql)
-        r = self.session.post(url, json={
-            "jql": jql,
-            "maxResults": 50,
-            "fields": ["summary", "status", "assignee", "attachment", "description"],
-        })
+        # Request standard fields + any known custom fields
+        custom = [f for f in [
+            self._field_id("link to original source"),
+            self._field_id("translated by"),
+        ] if f]
+        fields = ["summary", "status", "assignee", "attachment", "description"] + custom
+        log.info("JIRA search: jql=%s  extra_fields=%s", jql, custom)
+        r = self.session.post(url, json={"jql": jql, "maxResults": 50, "fields": fields})
         log.info("JIRA search response: status=%s", r.status_code)
         r.raise_for_status()
         return r.json().get("issues", [])
@@ -99,17 +116,21 @@ class JiraClient:
     def get_translator(self, issue: dict) -> str:
         """Return translator name from the custom 'Translated by' field."""
         fields = issue.get("fields", {})
-        if JIRA_TRANSLATOR_FIELD:
-            val = fields.get(JIRA_TRANSLATOR_FIELD)
+        # Try env var override first, then auto-discovered field ID
+        translator_field = JIRA_TRANSLATOR_FIELD or self._field_id("translated by")
+        if translator_field:
+            val = fields.get(translator_field)
+            # Multi-user picker returns a list
+            if isinstance(val, list) and val:
+                return val[0].get("displayName") or val[0].get("name") or ""
             if isinstance(val, dict):
                 return val.get("displayName") or val.get("name") or ""
             if isinstance(val, str):
                 return val
-        # Fallback: look in assignee or reporter
-        for f in ("assignee", "reporter"):
-            user = fields.get(f)
-            if isinstance(user, dict):
-                return user.get("displayName") or user.get("name") or ""
+        # Fallback: assignee
+        user = fields.get("assignee")
+        if isinstance(user, dict):
+            return user.get("displayName") or user.get("name") or ""
         return ""
 
     def get_original_url(self, issue: dict) -> str:
@@ -117,10 +138,12 @@ class JiraClient:
         fields = issue.get("fields", {})
         issue_key = issue.get("key", "")
 
-        # 1. Explicit custom field
-        if JIRA_ORIGINAL_URL_FIELD:
-            val = fields.get(JIRA_ORIGINAL_URL_FIELD, "")
-            if val and isinstance(val, str):
+        # 1. Custom field "Link to original source" (env var or auto-discovered)
+        url_field = JIRA_ORIGINAL_URL_FIELD or self._field_id("link to original source")
+        if url_field:
+            val = fields.get(url_field)
+            if isinstance(val, str) and val.startswith("http"):
+                log.info("Original URL from custom field: %s", val)
                 return val
 
         # 2. JIRA remote links (web links added via "Link" button)
