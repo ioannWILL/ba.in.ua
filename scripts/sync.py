@@ -37,8 +37,8 @@ JIRA_BASE_URL         = os.environ["JIRA_BASE_URL"]          # e.g. https://your
 JIRA_EMAIL            = os.environ["JIRA_EMAIL"]
 JIRA_API_TOKEN        = os.environ["JIRA_API_TOKEN"]
 JIRA_PROJECT_KEY      = os.environ["JIRA_PROJECT_KEY"]
-JIRA_TRIGGER_STATUS   = os.environ.get("JIRA_TRIGGER_STATUS", "To Review")
-JIRA_NEXT_STATUS      = os.environ.get("JIRA_NEXT_STATUS", "In Review")
+JIRA_TRIGGER_STATUS   = os.environ.get("JIRA_TRIGGER_STATUS") or "TO REVIEW"
+JIRA_NEXT_STATUS      = os.environ.get("JIRA_NEXT_STATUS") or "IN REVIEW"
 # Custom field ID for "Translated by" — find it via:
 # GET /rest/api/3/field  (look for your custom field name)
 JIRA_TRANSLATOR_FIELD = os.environ.get("JIRA_TRANSLATOR_FIELD", "")
@@ -77,7 +77,7 @@ class JiraClient:
     def get_issues_in_status(self, status: str) -> list[dict]:
         jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" ORDER BY updated ASC'
         # Atlassian deprecated GET /search — use POST /search/jql instead
-        url = f"{self.base}/rest/api/3/search"
+        url = f"{self.base}/rest/api/3/search/jql"
         log.info("JIRA search POST %s  jql=%s", url, jql)
         r = self.session.post(url, json={"jql": jql, "maxResults": 50})
         log.info("JIRA search response: status=%s content-type=%s body=%s",
