@@ -135,10 +135,17 @@ class JiraClient:
             except Exception as e:
                 log.warning("Could not fetch remote links for %s: %s", issue_key, e)
 
-        # 3. Search description for external URLs
+        # 3. ADF hyperlink marks in description (most common: URL as a clickable link)
         desc = fields.get("description") or ""
         if isinstance(desc, dict):
+            adf_urls = _adf_extract_urls(desc)
+            external_adf = [u for u in adf_urls if "atlassian.net" not in u]
+            if external_adf:
+                log.info("Found URL in ADF description: %s", external_adf[0])
+                return external_adf[0]
             desc = _adf_to_text(desc)
+
+        # 4. Plain-text URL in description
         urls = re.findall(r"https?://[^\s\]\)>\"'<]+", str(desc))
         external = [u for u in urls if "atlassian.net" not in u]
         if external:
@@ -184,6 +191,23 @@ def _adf_to_text(node: dict | list) -> str:
     return ""
 
 
+def _adf_extract_urls(node: dict | list) -> list[str]:
+    """Extract all href URLs from ADF link marks (hyperlinks in rich text)."""
+    urls: list[str] = []
+    if isinstance(node, list):
+        for n in node:
+            urls.extend(_adf_extract_urls(n))
+    elif isinstance(node, dict):
+        for mark in node.get("marks", []):
+            if mark.get("type") == "link":
+                href = mark.get("attrs", {}).get("href", "")
+                if href:
+                    urls.append(href)
+        for child in node.get("content", []):
+            urls.extend(_adf_extract_urls(child))
+    return urls
+
+
 # ── .docx → HTML ───────────────────────────────────────────────────────────────
 
 def _is_separator(text: str) -> bool:
@@ -191,8 +215,21 @@ def _is_separator(text: str) -> bool:
     return bool(re.fullmatch(r"[-–—_=*#\s]{3,}", text))
 
 
+def _is_cyrillic_title(text: str) -> bool:
+    """Return True if text is a plausible Ukrainian title (more Cyrillic than Latin)."""
+    cyrillic = sum(1 for c in text if "\u0400" <= c <= "\u04FF")
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    return cyrillic >= 3 and cyrillic >= latin
+
+
 def docx_to_html(data: bytes) -> tuple[str, str]:
-    """Parse .docx bytes and return (title, body_html)."""
+    """Parse .docx bytes and return (title, body_html).
+
+    Title priority:
+      1. First paragraph with Heading 1 / Title style
+      2. First predominantly-Cyrillic paragraph (skips English metadata lines)
+      3. First non-empty, non-separator paragraph as last resort
+    """
     doc = Document(BytesIO(data))
     title = ""
     body_parts = []
@@ -203,15 +240,25 @@ def docx_to_html(data: bytes) -> tuple[str, str]:
             continue
         style = para.style.name.lower()
 
-        # First Heading 1 / Title style → article title
         if not title and (style.startswith("heading 1") or style == "title"):
             title = text
             continue
 
         body_parts.append(_para_to_html(para))
 
-    # Fallback: first non-empty, non-separator paragraph becomes the title
     if not title:
+        # Pass 1: first Cyrillic-dominant paragraph
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text and not _is_separator(text) and _is_cyrillic_title(text):
+                title = text
+                first_html = _para_to_html(para)
+                if first_html in body_parts:
+                    body_parts.remove(first_html)
+                break
+
+    if not title:
+        # Pass 2: absolute fallback — first non-empty paragraph
         for para in doc.paragraphs:
             text = para.text.strip()
             if text and not _is_separator(text):
@@ -221,6 +268,7 @@ def docx_to_html(data: bytes) -> tuple[str, str]:
                     body_parts.remove(first_html)
                 break
 
+    log.info("Extracted title from docx: %s", title)
     return title, "\n".join(body_parts)
 
 
