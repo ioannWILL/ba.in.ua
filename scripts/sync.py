@@ -78,9 +78,11 @@ class JiraClient:
         jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" ORDER BY updated ASC'
         # Atlassian deprecated GET /search — use POST /search/jql instead
         r = self.session.post(
-            f"{self.base}/rest/api/3/search/jql",
+            f"{self.base}/rest/api/3/search",
             json={"jql": jql, "maxResults": 50},
         )
+        if not r.ok:
+            log.error("JIRA search failed %s: %s", r.status_code, r.text[:500])
         r.raise_for_status()
         return r.json().get("issues", [])
 
