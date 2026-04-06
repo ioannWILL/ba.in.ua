@@ -1,0 +1,52 @@
+name: Auto-translate → WordPress sync (Mon & Wed)
+
+on:
+  schedule:
+    # Step 1: translate runs at 07:50 UTC on Mon (1) and Wed (3)
+    # Step 2: the daily sync runs at 08:00 UTC (picks up the newly created TO REVIEW issue)
+    - cron: "50 7 * * 1,3"
+  workflow_dispatch:
+
+jobs:
+  translate-then-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 1 — Translate oldest TO TRANSLATE issue
+        env:
+          JIRA_BASE_URL:                ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL:                   ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN:               ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY:             ${{ secrets.JIRA_PROJECT_KEY }}
+          JIRA_TRANSLATE_SOURCE_STATUS: ${{ vars.JIRA_TRANSLATE_SOURCE_STATUS }}
+          JIRA_TRANSLATE_WORKING_STATUS: ${{ vars.JIRA_TRANSLATE_WORKING_STATUS }}
+          JIRA_TRANSLATE_DONE_STATUS:   ${{ vars.JIRA_TRANSLATE_DONE_STATUS }}
+          ANTHROPIC_API_KEY:            ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/translate.py
+
+      - name: 2 — Publish translated article to WordPress
+        env:
+          JIRA_BASE_URL:           ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL:              ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN:          ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY:        ${{ secrets.JIRA_PROJECT_KEY }}
+          JIRA_TRIGGER_STATUS:     ${{ vars.JIRA_TRIGGER_STATUS }}
+          JIRA_NEXT_STATUS:        ${{ vars.JIRA_NEXT_STATUS }}
+          JIRA_TRANSLATOR_FIELD:   ${{ vars.JIRA_TRANSLATOR_FIELD }}
+          JIRA_ORIGINAL_URL_FIELD: ${{ vars.JIRA_ORIGINAL_URL_FIELD }}
+          WP_BASE_URL:             ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME:             ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:         ${{ secrets.WP_APP_PASSWORD }}
+          ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/sync.py
