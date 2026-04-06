@@ -76,11 +76,13 @@ class JiraClient:
 
     def get_issues_in_status(self, status: str) -> list[dict]:
         jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" ORDER BY updated ASC'
-        data = self._get(
-            "/rest/api/3/search",
-            params={"jql": jql, "maxResults": 50},
+        # Atlassian deprecated GET /search — use POST /search/jql instead
+        r = self.session.post(
+            f"{self.base}/rest/api/3/search/jql",
+            json={"jql": jql, "maxResults": 50},
         )
-        return data.get("issues", [])
+        r.raise_for_status()
+        return r.json().get("issues", [])
 
     def get_attachments(self, issue: dict) -> list[dict]:
         return issue.get("fields", {}).get("attachment", [])

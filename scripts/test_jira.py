@@ -35,9 +35,10 @@ for a in atts:
 # ── 2. JQL query used by the daily workflow ────────────────────────────────────
 print(f"\n── Issues in '{JIRA_TRIGGER_STATUS}' ──")
 jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{JIRA_TRIGGER_STATUS}" ORDER BY updated ASC'
-r2 = requests.get(
-    f"{JIRA_BASE_URL}/rest/api/3/search",
-    params={"jql": jql, "maxResults": 10, "fields": "summary,status,assignee"},
+# Atlassian deprecated GET /search — use POST /search/jql
+r2 = requests.post(
+    f"{JIRA_BASE_URL}/rest/api/3/search/jql",
+    json={"jql": jql, "maxResults": 10, "fields": ["summary", "status", "assignee"]},
     auth=auth, headers=headers,
 )
 r2.raise_for_status()
