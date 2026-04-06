@@ -8,8 +8,9 @@ Daily checks for JIRA issues in 'To Review' status, then for each one:
   - Uploads featured image to WordPress
   - Generates bilingual tags via Claude
   - Creates WordPress draft post with attribution footer
+  - Comments on JIRA issue with WordPress draft link
   - Transitions JIRA issue to 'In Review'
-  - Sends email notification
+  - Translator is read from the Assignee field
 """
 
 import json
@@ -17,10 +18,6 @@ import logging
 import mimetypes
 import os
 import re
-import smtplib
-import tempfile
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from io import BytesIO
 
 import anthropic
@@ -53,12 +50,6 @@ WP_USERNAME    = os.environ["WP_USERNAME"]
 WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-
-SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER     = os.environ["SMTP_USER"]
-SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
-NOTIFY_EMAIL  = os.environ.get("NOTIFY_EMAIL", "vilchdeveloper@gmail.com")
 
 REVIEWER_NAME = "Іван Вільчавський"
 REVIEWER_URL  = "https://www.linkedin.com/in/ivan-vilchavskyi"
@@ -415,22 +406,6 @@ def build_attribution(original_url: str, original_title: str, translator: str) -
     )
 
 
-# ── Email notification ─────────────────────────────────────────────────────────
-
-def send_email(subject: str, html_body: str) -> None:
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_USER
-    msg["To"] = NOTIFY_EMAIL
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(SMTP_USER, SMTP_PASSWORD)
-        smtp.sendmail(SMTP_USER, NOTIFY_EMAIL, msg.as_string())
-    log.info("Notification sent to %s", NOTIFY_EMAIL)
-
-
 # ── Main issue processor ───────────────────────────────────────────────────────
 
 def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
@@ -499,23 +474,6 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
 
     # ── 9. Transition JIRA issue to 'In Review' ────────────────────────────────
     jira.transition_issue(key, JIRA_NEXT_STATUS)
-
-    # ── 10. Send email notification ───────────────────────────────────────────
-    jira_url = f"{JIRA_BASE_URL.rstrip('/')}/browse/{key}"
-    email_body = f"""
-<html><body style="font-family:sans-serif;line-height:1.6">
-<h2>Нова стаття готова до ревью 📝</h2>
-<table>
-  <tr><td><strong>Заголовок</strong></td><td>{uk_title}</td></tr>
-  <tr><td><strong>Перекладач</strong></td><td>{translator or "—"}</td></tr>
-  <tr><td><strong>JIRA</strong></td><td><a href="{jira_url}">{key}</a></td></tr>
-  <tr><td><strong>WordPress (чернетка)</strong></td><td><a href="{wp_edit_url}">{wp_edit_url}</a></td></tr>
-  <tr><td><strong>Оригінал</strong></td><td><a href="{original_url}">{original_title or original_url or "—"}</a></td></tr>
-  <tr><td><strong>Теги</strong></td><td>{", ".join(tags_list)}</td></tr>
-</table>
-</body></html>
-"""
-    send_email(f"[ba.in.ua] Нова стаття до ревью: {uk_title}", email_body)
 
     return True
 

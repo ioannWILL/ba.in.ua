@@ -40,8 +40,4 @@ jobs:
           WP_APP_PASSWORD:         ${{ secrets.WP_APP_PASSWORD }}
           # ── Anthropic (store as GitHub Secret) ──────────────────────────────
           ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
-          # ── Email (store as GitHub Secrets) ─────────────────────────────────
-          SMTP_USER:               ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD:           ${{ secrets.SMTP_PASSWORD }}
-          NOTIFY_EMAIL:            ${{ vars.NOTIFY_EMAIL }}
         run: python scripts/sync.py
