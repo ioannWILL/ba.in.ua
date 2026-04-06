@@ -31,6 +31,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+def gha_summary(text: str) -> None:
+    """Append markdown text to the GitHub Actions job summary."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a") as f:
+            f.write(text + "\n")
+
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 JIRA_BASE_URL         = os.environ["JIRA_BASE_URL"]          # e.g. https://yourteam.atlassian.net
@@ -531,32 +540,38 @@ def build_attribution(original_url: str, original_title: str, translator: str) -
 def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
     key = issue["key"]
     summary = issue["fields"].get("summary", key)
+    jira_url = f"{JIRA_BASE_URL.rstrip('/')}/browse/{key}"
     log.info("=== Processing %s: %s ===", key, summary)
+    gha_summary(f"\n### [{key}]({jira_url}) — {summary}\n| | |\n|---|---|")
 
     attachments = jira.get_attachments(issue)
     translator   = jira.get_translator(issue)
     original_url, original_title = jira.get_original_article(issue)
 
-    log.info("Translator: %s | Original URL: %s | Original title: %s",
-             translator or "(none)", original_url or "(none)", original_title or "(none)")
+    gha_summary(f"| Translator | {translator or '—'} |")
+    gha_summary(f"| Original | [{original_title or original_url}]({original_url}) |" if original_url else "| Original | — |")
 
     # ── 1. Find .docx translation ──────────────────────────────────────────────
     docx_files = [a for a in attachments if a["filename"].lower().endswith(".docx")]
     if not docx_files:
         log.warning("No .docx attachment in %s — skipping", key)
+        gha_summary(f"| ⚠️ Skipped | No .docx attachment found |")
         return False
     docx_data = jira.download_attachment(docx_files[0])
+    gha_summary(f"| .docx | `{docx_files[0]['filename']}` |")
 
     # ── 2. Extract Ukrainian title + body ──────────────────────────────────────
     uk_title, body_html = docx_to_html(docx_data)
     if not uk_title:
         uk_title = summary
     log.info("Extracted title: %s", uk_title)
+    gha_summary(f"| Ukrainian title | {uk_title} |")
 
     # ── 4. Generate tags ───────────────────────────────────────────────────────
     tags_list = generate_tags(uk_title, body_html)
     log.info("Tags: %s", tags_list)
     tag_ids = [wp.get_or_create_tag(t) for t in tags_list]
+    gha_summary(f"| Tags | {', '.join(tags_list)} |")
 
     # ── 5. Build full content with attribution ─────────────────────────────────
     attribution = build_attribution(original_url, original_title, translator)
@@ -569,8 +584,10 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
         img_bytes, img_filename, img_mime = img_result
         featured_media_id = wp.upload_media(img_filename, img_bytes, img_mime)
         log.info("Uploaded image '%s' → media id %s", img_filename, featured_media_id)
+        gha_summary(f"| Featured image | `{img_filename}` (media id {featured_media_id}) |")
     else:
         log.info("No image attachments found")
+        gha_summary(f"| Featured image | — (none found) |")
 
     # ── 7. Create WordPress draft post ────────────────────────────────────────
     wp_post = wp.create_post(
@@ -585,12 +602,14 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
         f"?post={wp_post['id']}&action=edit"
     )
     log.info("Created WP draft → %s", wp_edit_url)
+    gha_summary(f"| ✅ WordPress draft | [Edit post]({wp_edit_url}) |")
 
-    # ── 8. Comment on JIRA with WP link (idempotency aid) ─────────────────────
+    # ── 8. Comment on JIRA with WP link ───────────────────────────────────────
     jira.add_comment(key, f"WordPress draft created: {wp_edit_url}")
 
-    # ── 9. Transition JIRA issue to 'In Review' ────────────────────────────────
+    # ── 9. Transition JIRA issue ───────────────────────────────────────────────
     jira.transition_issue(key, JIRA_NEXT_STATUS)
+    gha_summary(f"| ✅ JIRA status | → {JIRA_NEXT_STATUS} |")
 
     return True
 
@@ -601,8 +620,14 @@ def main() -> None:
     jira = JiraClient()
     wp   = WpClient()
 
+    gha_summary("## 📰 JIRA → WordPress sync\n")
+
     issues = jira.get_issues_in_status(JIRA_TRIGGER_STATUS)
     log.info("Found %d issue(s) in '%s'", len(issues), JIRA_TRIGGER_STATUS)
+    gha_summary(f"Found **{len(issues)}** issue(s) in **{JIRA_TRIGGER_STATUS}**")
+
+    if not issues:
+        gha_summary("ℹ️ Nothing to process.")
 
     processed = 0
     for issue in issues:
@@ -611,8 +636,10 @@ def main() -> None:
                 processed += 1
         except Exception:
             log.exception("Failed to process %s", issue["key"])
+            gha_summary(f"| ❌ Error | See logs for details |")
 
     log.info("Done — processed %d / %d issue(s).", processed, len(issues))
+    gha_summary(f"\n**Done — {processed}/{len(issues)} issue(s) processed.**")
 
 
 if __name__ == "__main__":

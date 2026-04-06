@@ -23,6 +23,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+# ── GitHub Actions job summary ─────────────────────────────────────────────────
+
+def gha_summary(text: str) -> None:
+    """Append markdown text to the GitHub Actions job summary (GITHUB_STEP_SUMMARY)."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a") as f:
+            f.write(text + "\n")
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 JIRA_BASE_URL    = os.environ["JIRA_BASE_URL"]
@@ -239,25 +249,35 @@ def build_docx(title_uk: str, blocks_uk: list[tuple[str, str]]) -> bytes:
 def main() -> None:
     jira = JiraClient()
 
+    gha_summary("## 🔤 Auto-translation\n")
+
     # 1. Find oldest issue in TO TRANSLATE
     issue = jira.get_oldest_issue_in_status(JIRA_SOURCE_STATUS)
     if not issue:
-        log.info("No issues found in '%s'. Nothing to do.", JIRA_SOURCE_STATUS)
+        msg = f"No issues found in **{JIRA_SOURCE_STATUS}**. Nothing to translate."
+        log.info(msg)
+        gha_summary(f"ℹ️ {msg}")
         return
 
     key     = issue["key"]
     fields  = issue["fields"]
     summary = fields.get("summary", key)
     issue_number = re.search(r"\d+", key).group()
+    jira_url = f"{JIRA_BASE_URL.rstrip('/')}/browse/{key}"
 
-    log.info("Processing %s: %s", key, summary)
+    log.info("Found issue: %s — %s", key, summary)
+    gha_summary(f"| | |\n|---|---|\n"
+                f"| **Issue** | [{key}]({jira_url}) |\n"
+                f"| **Summary** | {summary} |\n")
 
     # 2. Move to IN TRANSLATION
-    jira.transition_issue(key, JIRA_WORKING_STATUS)
+    ok = jira.transition_issue(key, JIRA_WORKING_STATUS)
+    gha_summary(f"| **Step 1 — Move to {JIRA_WORKING_STATUS}** | {'✅' if ok else '⚠️ transition not found'} |")
 
     # 3. Translate title
     log.info("Translating title…")
     title_uk = translate(summary)
+    gha_summary(f"| **Step 2 — Title (UK)** | {title_uk} |")
 
     # 4. Extract and translate description blocks
     desc = fields.get("description")
@@ -268,12 +288,19 @@ def main() -> None:
         blocks_en = [("paragraph", p.strip()) for p in desc.split("\n\n") if p.strip()]
 
     log.info("Translating %d block(s) from description…", len(blocks_en))
+    gha_summary(f"| **Step 3 — Description blocks** | {len(blocks_en)} block(s) found |")
+
+    if not blocks_en:
+        log.warning("Description is empty — .docx will contain only the title.")
+        gha_summary("| | ⚠️ Description is empty — only title will be in the .docx |")
+
     blocks_uk = [(btype, translate(text)) for btype, text in blocks_en]
 
     # 5. Build .docx
     docx_bytes = build_docx(title_uk, blocks_uk)
     filename = f"translation_biu{issue_number}.docx"
     log.info("Created %s (%d bytes)", filename, len(docx_bytes))
+    gha_summary(f"| **Step 4 — .docx created** | `{filename}` ({len(docx_bytes):,} bytes) |")
 
     # 6. Attach .docx to JIRA issue
     jira.attach_file(
@@ -281,11 +308,14 @@ def main() -> None:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
     jira.add_comment(key, f"Translation file attached: {filename}")
+    gha_summary(f"| **Step 5 — Attached to JIRA** | ✅ [{key}]({jira_url}) |")
 
     # 7. Move to TO REVIEW
-    jira.transition_issue(key, JIRA_DONE_STATUS)
+    ok = jira.transition_issue(key, JIRA_DONE_STATUS)
+    gha_summary(f"| **Step 6 — Move to {JIRA_DONE_STATUS}** | {'✅' if ok else '⚠️ transition not found'} |")
 
     log.info("Done — %s translated and moved to '%s'.", key, JIRA_DONE_STATUS)
+    gha_summary(f"\n**✅ Done — [{key}]({jira_url}) moved to {JIRA_DONE_STATUS}**")
 
 
 if __name__ == "__main__":
