@@ -79,9 +79,12 @@ class JiraClient:
         # Atlassian deprecated GET /search — use POST /search/jql instead
         url = f"{self.base}/rest/api/3/search/jql"
         log.info("JIRA search POST %s  jql=%s", url, jql)
-        r = self.session.post(url, json={"jql": jql, "maxResults": 50})
-        log.info("JIRA search response: status=%s content-type=%s body=%s",
-                 r.status_code, r.headers.get("content-type"), r.text[:600])
+        r = self.session.post(url, json={
+            "jql": jql,
+            "maxResults": 50,
+            "fields": ["summary", "status", "assignee", "attachment", "description"],
+        })
+        log.info("JIRA search response: status=%s", r.status_code)
         r.raise_for_status()
         return r.json().get("issues", [])
 
