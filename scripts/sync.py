@@ -115,12 +115,27 @@ class JiraClient:
     def get_original_url(self, issue: dict) -> str:
         """Extract the original English article URL from the JIRA issue."""
         fields = issue.get("fields", {})
+        issue_key = issue.get("key", "")
+
         # 1. Explicit custom field
         if JIRA_ORIGINAL_URL_FIELD:
             val = fields.get(JIRA_ORIGINAL_URL_FIELD, "")
             if val and isinstance(val, str):
                 return val
-        # 2. Search description for external URLs
+
+        # 2. JIRA remote links (web links added via "Link" button)
+        if issue_key:
+            try:
+                links = self._get(f"/rest/api/3/issue/{issue_key}/remotelink")
+                for link in links:
+                    url = link.get("object", {}).get("url", "")
+                    if url and "atlassian.net" not in url:
+                        log.info("Found remote link: %s", url)
+                        return url
+            except Exception as e:
+                log.warning("Could not fetch remote links for %s: %s", issue_key, e)
+
+        # 3. Search description for external URLs
         desc = fields.get("description") or ""
         if isinstance(desc, dict):
             desc = _adf_to_text(desc)
@@ -171,6 +186,11 @@ def _adf_to_text(node: dict | list) -> str:
 
 # ── .docx → HTML ───────────────────────────────────────────────────────────────
 
+def _is_separator(text: str) -> bool:
+    """Return True if the line is a visual separator (dashes, underscores, etc.)."""
+    return bool(re.fullmatch(r"[-–—_=*#\s]{3,}", text))
+
+
 def docx_to_html(data: bytes) -> tuple[str, str]:
     """Parse .docx bytes and return (title, body_html)."""
     doc = Document(BytesIO(data))
@@ -179,9 +199,7 @@ def docx_to_html(data: bytes) -> tuple[str, str]:
 
     for para in doc.paragraphs:
         text = para.text.strip()
-        if not text:
-            if body_parts:
-                body_parts.append("<p>&nbsp;</p>")
+        if not text or _is_separator(text):
             continue
         style = para.style.name.lower()
 
@@ -192,12 +210,12 @@ def docx_to_html(data: bytes) -> tuple[str, str]:
 
         body_parts.append(_para_to_html(para))
 
-    # Fallback: first non-empty paragraph becomes the title
+    # Fallback: first non-empty, non-separator paragraph becomes the title
     if not title:
         for para in doc.paragraphs:
-            if para.text.strip():
-                title = para.text.strip()
-                # Remove it from body output
+            text = para.text.strip()
+            if text and not _is_separator(text):
+                title = text
                 first_html = _para_to_html(para)
                 if first_html in body_parts:
                     body_parts.remove(first_html)
