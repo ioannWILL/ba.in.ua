@@ -129,27 +129,30 @@ class JiraClient:
                 links = self._get(f"/rest/api/3/issue/{issue_key}/remotelink")
                 for link in links:
                     url = link.get("object", {}).get("url", "")
-                    if url and "atlassian.net" not in url:
+                    if url and "atlassian.net" not in url and not _is_media_url(url):
                         log.info("Found remote link: %s", url)
                         return url
             except Exception as e:
                 log.warning("Could not fetch remote links for %s: %s", issue_key, e)
 
-        # 3. ADF hyperlink marks in description (most common: URL as a clickable link)
+        # 3. ADF hyperlink marks in description — prefer article URLs over image URLs
         desc = fields.get("description") or ""
         if isinstance(desc, dict):
             adf_urls = _adf_extract_urls(desc)
-            external_adf = [u for u in adf_urls if "atlassian.net" not in u]
-            if external_adf:
-                log.info("Found URL in ADF description: %s", external_adf[0])
-                return external_adf[0]
+            article_urls = [
+                u for u in adf_urls
+                if "atlassian.net" not in u and not _is_media_url(u)
+            ]
+            if article_urls:
+                log.info("Found article URL in ADF description: %s", article_urls[0])
+                return article_urls[0]
             desc = _adf_to_text(desc)
 
         # 4. Plain-text URL in description
         urls = re.findall(r"https?://[^\s\]\)>\"'<]+", str(desc))
-        external = [u for u in urls if "atlassian.net" not in u]
-        if external:
-            return external[0]
+        article_urls = [u for u in urls if "atlassian.net" not in u and not _is_media_url(u)]
+        if article_urls:
+            return article_urls[0]
         return ""
 
     def get_transition_id(self, issue_key: str, status_name: str) -> str | None:
@@ -178,6 +181,26 @@ class JiraClient:
                            "content": [{"type": "paragraph",
                                         "content": [{"type": "text", "text": text}]}]}},
         )
+
+
+_MEDIA_HOSTS = {
+    "freepik.com", "unsplash.com", "shutterstock.com", "pixabay.com",
+    "istockphoto.com", "gettyimages.com", "pexels.com", "flickr.com",
+    "imgur.com", "cloudinary.com", "depositphotos.com", "dreamstime.com",
+}
+_MEDIA_EXT_RE = re.compile(r"\.(jpe?g|png|gif|webp|svg|bmp|tiff?)(\?|$)", re.I)
+
+
+def _is_media_url(url: str) -> bool:
+    """Return True if the URL points to an image hosting site or image file."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().lstrip("www.")
+    if any(host == h or host.endswith("." + h) for h in _MEDIA_HOSTS):
+        return True
+    if _MEDIA_EXT_RE.search(parsed.path):
+        return True
+    return False
 
 
 def _adf_to_text(node: dict | list) -> str:
