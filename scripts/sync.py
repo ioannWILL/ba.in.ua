@@ -136,11 +136,13 @@ class JiraClient:
     def get_original_article(self, issue: dict) -> tuple[str, str]:
         """Return (url, title) for the original English article.
 
-        Title is extracted from the JIRA field anchor text or URL slug —
-        we never scrape the target page (many sites like Medium block bots).
+        Title comes from the JIRA issue summary (the issue name IS the article title).
+        URL is pulled from the 'Link to original source' custom field.
         """
         fields = issue.get("fields", {})
         issue_key = issue.get("key", "")
+        # The JIRA issue name is the original article title
+        original_title = fields.get("summary", "")
 
         # 1. Custom field "Link to original source"
         url_field = JIRA_ORIGINAL_URL_FIELD or self._field_id("link to original source")
@@ -148,43 +150,39 @@ class JiraClient:
             val = fields.get(url_field)
             if isinstance(val, str) and val.startswith("http"):
                 log.info("Original URL from custom field: %s", val)
-                return val, _title_from_slug(val)
+                return val, original_title
             if isinstance(val, dict):
-                url  = val.get("url") or val.get("href", "")
-                title = val.get("title") or val.get("text", "")
+                url = val.get("url") or val.get("href", "")
                 if url:
-                    return url, title or _title_from_slug(url)
+                    return url, original_title
 
         # 2. JIRA remote links (web links added via "Link" button)
         if issue_key:
             try:
                 links = self._get(f"/rest/api/3/issue/{issue_key}/remotelink")
                 for link in links:
-                    obj = link.get("object", {})
-                    url = obj.get("url", "")
+                    url = link.get("object", {}).get("url", "")
                     if url and "atlassian.net" not in url and not _is_media_url(url):
-                        title = obj.get("title", "") or _title_from_slug(url)
-                        log.info("Found remote link: %s (%s)", url, title)
-                        return url, title
+                        log.info("Found remote link: %s", url)
+                        return url, original_title
             except Exception as e:
                 log.warning("Could not fetch remote links for %s: %s", issue_key, e)
 
-        # 3. ADF hyperlinks in description — use anchor text as title
+        # 3. ADF hyperlinks in description
         desc = fields.get("description") or ""
         if isinstance(desc, dict):
-            for url, anchor in _adf_extract_urls(desc):
+            for url, _ in _adf_extract_urls(desc):
                 if "atlassian.net" not in url and not _is_media_url(url):
-                    title = anchor or _title_from_slug(url)
-                    log.info("Found article URL in ADF: %s (%s)", url, title)
-                    return url, title
+                    log.info("Found article URL in ADF: %s", url)
+                    return url, original_title
             desc = _adf_to_text(desc)
 
         # 4. Plain-text URL in description
         for url in re.findall(r"https?://[^\s\]\)>\"'<]+", str(desc)):
             if "atlassian.net" not in url and not _is_media_url(url):
-                return url, _title_from_slug(url)
+                return url, original_title
 
-        return "", ""
+        return "", original_title
 
     def get_transition_id(self, issue_key: str, status_name: str) -> str | None:
         data = self._get(f"/rest/api/3/issue/{issue_key}/transitions")
