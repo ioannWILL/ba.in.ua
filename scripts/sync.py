@@ -133,50 +133,58 @@ class JiraClient:
             return user.get("displayName") or user.get("name") or ""
         return ""
 
-    def get_original_url(self, issue: dict) -> str:
-        """Extract the original English article URL from the JIRA issue."""
+    def get_original_article(self, issue: dict) -> tuple[str, str]:
+        """Return (url, title) for the original English article.
+
+        Title is extracted from the JIRA field anchor text or URL slug —
+        we never scrape the target page (many sites like Medium block bots).
+        """
         fields = issue.get("fields", {})
         issue_key = issue.get("key", "")
 
-        # 1. Custom field "Link to original source" (env var or auto-discovered)
+        # 1. Custom field "Link to original source"
         url_field = JIRA_ORIGINAL_URL_FIELD or self._field_id("link to original source")
         if url_field:
             val = fields.get(url_field)
             if isinstance(val, str) and val.startswith("http"):
                 log.info("Original URL from custom field: %s", val)
-                return val
+                return val, _title_from_slug(val)
+            if isinstance(val, dict):
+                url  = val.get("url") or val.get("href", "")
+                title = val.get("title") or val.get("text", "")
+                if url:
+                    return url, title or _title_from_slug(url)
 
         # 2. JIRA remote links (web links added via "Link" button)
         if issue_key:
             try:
                 links = self._get(f"/rest/api/3/issue/{issue_key}/remotelink")
                 for link in links:
-                    url = link.get("object", {}).get("url", "")
+                    obj = link.get("object", {})
+                    url = obj.get("url", "")
                     if url and "atlassian.net" not in url and not _is_media_url(url):
-                        log.info("Found remote link: %s", url)
-                        return url
+                        title = obj.get("title", "") or _title_from_slug(url)
+                        log.info("Found remote link: %s (%s)", url, title)
+                        return url, title
             except Exception as e:
                 log.warning("Could not fetch remote links for %s: %s", issue_key, e)
 
-        # 3. ADF hyperlink marks in description — prefer article URLs over image URLs
+        # 3. ADF hyperlinks in description — use anchor text as title
         desc = fields.get("description") or ""
         if isinstance(desc, dict):
-            adf_urls = _adf_extract_urls(desc)
-            article_urls = [
-                u for u in adf_urls
-                if "atlassian.net" not in u and not _is_media_url(u)
-            ]
-            if article_urls:
-                log.info("Found article URL in ADF description: %s", article_urls[0])
-                return article_urls[0]
+            for url, anchor in _adf_extract_urls(desc):
+                if "atlassian.net" not in url and not _is_media_url(url):
+                    title = anchor or _title_from_slug(url)
+                    log.info("Found article URL in ADF: %s (%s)", url, title)
+                    return url, title
             desc = _adf_to_text(desc)
 
         # 4. Plain-text URL in description
-        urls = re.findall(r"https?://[^\s\]\)>\"'<]+", str(desc))
-        article_urls = [u for u in urls if "atlassian.net" not in u and not _is_media_url(u)]
-        if article_urls:
-            return article_urls[0]
-        return ""
+        for url in re.findall(r"https?://[^\s\]\)>\"'<]+", str(desc)):
+            if "atlassian.net" not in url and not _is_media_url(url):
+                return url, _title_from_slug(url)
+
+        return "", ""
 
     def get_transition_id(self, issue_key: str, status_name: str) -> str | None:
         data = self._get(f"/rest/api/3/issue/{issue_key}/transitions")
@@ -237,21 +245,32 @@ def _adf_to_text(node: dict | list) -> str:
     return ""
 
 
-def _adf_extract_urls(node: dict | list) -> list[str]:
-    """Extract all href URLs from ADF link marks (hyperlinks in rich text)."""
-    urls: list[str] = []
+def _adf_extract_urls(node: dict | list) -> list[tuple[str, str]]:
+    """Extract (url, anchor_text) pairs from ADF link marks."""
+    results: list[tuple[str, str]] = []
     if isinstance(node, list):
         for n in node:
-            urls.extend(_adf_extract_urls(n))
+            results.extend(_adf_extract_urls(n))
     elif isinstance(node, dict):
         for mark in node.get("marks", []):
             if mark.get("type") == "link":
                 href = mark.get("attrs", {}).get("href", "")
                 if href:
-                    urls.append(href)
+                    text = node.get("text", "")
+                    results.append((href, text))
         for child in node.get("content", []):
-            urls.extend(_adf_extract_urls(child))
-    return urls
+            results.extend(_adf_extract_urls(child))
+    return results
+
+
+def _title_from_slug(url: str) -> str:
+    """Derive a readable title from a URL slug as last resort (e.g. Medium articles)."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path.rstrip("/")
+    slug = path.split("/")[-1] if path else ""
+    # Strip trailing hex IDs common in Medium URLs (e.g. -b642adfe738d)
+    slug = re.sub(r"-[0-9a-f]{8,}$", "", slug)
+    return slug.replace("-", " ").title()
 
 
 # ── .docx → HTML ───────────────────────────────────────────────────────────────
@@ -487,21 +506,6 @@ def _fetch_og_image(url: str) -> str:
     return ""
 
 
-def _fetch_page_title(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(r.text, "html.parser")
-        og = soup.find("meta", property="og:title")
-        if og and og.get("content"):
-            return og["content"].strip()
-        if soup.title and soup.title.string:
-            return soup.title.string.strip()
-    except Exception as e:
-        log.warning("Could not fetch page title from %s: %s", url, e)
-    return ""
-
 
 # ── Attribution paragraph ──────────────────────────────────────────────────────
 
@@ -533,9 +537,10 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
 
     attachments = jira.get_attachments(issue)
     translator   = jira.get_translator(issue)
-    original_url = jira.get_original_url(issue)
+    original_url, original_title = jira.get_original_article(issue)
 
-    log.info("Translator: %s | Original URL: %s", translator or "(none)", original_url or "(none)")
+    log.info("Translator: %s | Original URL: %s | Original title: %s",
+             translator or "(none)", original_url or "(none)", original_title or "(none)")
 
     # ── 1. Find .docx translation ──────────────────────────────────────────────
     docx_files = [a for a in attachments if a["filename"].lower().endswith(".docx")]
@@ -549,10 +554,6 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
     if not uk_title:
         uk_title = summary
     log.info("Extracted title: %s", uk_title)
-
-    # ── 3. Fetch original article title ────────────────────────────────────────
-    original_title = _fetch_page_title(original_url)
-    log.info("Original title: %s", original_title or "(not found)")
 
     # ── 4. Generate tags ───────────────────────────────────────────────────────
     tags_list = generate_tags(uk_title, body_html)
