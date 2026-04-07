@@ -582,9 +582,13 @@ def process_issue(issue: dict, jira: JiraClient, wp: WpClient) -> bool:
     img_result = pick_main_image(attachments, original_url, jira)
     if img_result:
         img_bytes, img_filename, img_mime = img_result
-        featured_media_id = wp.upload_media(img_filename, img_bytes, img_mime)
-        log.info("Uploaded image '%s' → media id %s", img_filename, featured_media_id)
-        gha_summary(f"| Featured image | `{img_filename}` (media id {featured_media_id}) |")
+        try:
+            featured_media_id = wp.upload_media(img_filename, img_bytes, img_mime)
+            log.info("Uploaded image '%s' → media id %s", img_filename, featured_media_id)
+            gha_summary(f"| Featured image | `{img_filename}` (media id {featured_media_id}) |")
+        except Exception as e:
+            log.warning("Image upload failed (%s), continuing without featured image: %s", img_filename, e)
+            gha_summary(f"| Featured image | ⚠️ Upload failed: {e} |")
     else:
         log.info("No image attachments found")
         gha_summary(f"| Featured image | — (none found) |")
