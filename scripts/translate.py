@@ -72,7 +72,7 @@ class JiraClient:
         """Return the issue with the lowest BIU number in the given status."""
         jql = (
             f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" '
-            f'ORDER BY key ASC'
+            f'AND issuetype != Epic ORDER BY key ASC'
         )
         r = self.session.post(
             f"{self.base}/rest/api/3/search/jql",

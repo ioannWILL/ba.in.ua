@@ -100,7 +100,7 @@ class JiraClient:
         return r
 
     def get_issues_in_status(self, status: str) -> list[dict]:
-        jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" ORDER BY updated ASC'
+        jql = f'project = "{JIRA_PROJECT_KEY}" AND status = "{status}" AND issuetype != Epic ORDER BY updated ASC'
         url = f"{self.base}/rest/api/3/search/jql"
         # Request standard fields + any known custom fields
         custom = [f for f in [
